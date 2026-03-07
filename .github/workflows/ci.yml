@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: realtime_ops
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d realtime_ops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports:
+          - 5672:5672
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/realtime_ops
+      RABBITMQ_URL: amqp://guest:guest@localhost:5672
+      REDIS_URL: redis://localhost:6379
+      OPERATOR_API_TOKEN: ops-local-token
+      RATE_LIMIT_MAX_REQUESTS: 1000
+      RATE_LIMIT_WINDOW_SECONDS: 60
+      REALTIME_EVENTS_QUEUE: realtime.gateway.events.ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for dependencies
+        run: |
+          for i in {1..40}; do
+            (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1 && \
+            (echo > /dev/tcp/127.0.0.1/5672) >/dev/null 2>&1 && \
+            (echo > /dev/tcp/127.0.0.1/6379) >/dev/null 2>&1 && break
+            if [ "$i" -eq 40 ]; then
+              echo "Dependencies failed to start";
+              exit 1;
+            fi
+            sleep 2
+          done
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm run test:ci

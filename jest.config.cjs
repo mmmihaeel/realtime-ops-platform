@@ -1,0 +1,28 @@
+module.exports = {
+  roots: ['<rootDir>/tests', '<rootDir>/libs', '<rootDir>/apps'],
+  testEnvironment: 'node',
+  moduleFileExtensions: ['js', 'json', 'ts'],
+  testRegex: '.*\\.(spec|test)\\.ts$',
+  transform: {
+    '^.+\\.(t|j)s$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
+  },
+  collectCoverageFrom: ['apps/**/*.ts', 'libs/**/*.ts', '!**/*.module.ts', '!**/main.ts'],
+  coverageDirectory: 'coverage',
+  moduleNameMapper: {
+    '^@app/common$': '<rootDir>/libs/common/src/index.ts',
+    '^@app/common/(.*)$': '<rootDir>/libs/common/src/$1',
+    '^@app/core$': '<rootDir>/libs/core/src/index.ts',
+    '^@app/core/(.*)$': '<rootDir>/libs/core/src/$1',
+    '^@app/database$': '<rootDir>/libs/database/src/index.ts',
+    '^@app/database/(.*)$': '<rootDir>/libs/database/src/$1',
+    '^@app/messaging$': '<rootDir>/libs/messaging/src/index.ts',
+    '^@app/messaging/(.*)$': '<rootDir>/libs/messaging/src/$1',
+    '^@app/redis$': '<rootDir>/libs/redis/src/index.ts',
+    '^@app/redis/(.*)$': '<rootDir>/libs/redis/src/$1',
+    '^@app/application$': '<rootDir>/libs/application/src/index.ts',
+    '^@app/application/(.*)$': '<rootDir>/libs/application/src/$1',
+    '^@app/auth$': '<rootDir>/libs/auth/src/index.ts',
+    '^@app/auth/(.*)$': '<rootDir>/libs/auth/src/$1',
+  },
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
+};

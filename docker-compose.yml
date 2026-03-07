@@ -1,0 +1,123 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: realtime-ops-postgres
+    environment:
+      POSTGRES_DB: realtime_ops
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - '5435:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U app -d realtime_ops']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: realtime-ops-rabbitmq
+    ports:
+      - '5673:5672'
+      - '15673:15672'
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', 'check_running']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: realtime-ops-redis
+    ports:
+      - '6382:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  db-setup:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile
+    container_name: realtime-ops-db-setup
+    env_file:
+      - .env
+    command: ['node', 'dist/scripts/db-setup.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: 'no'
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile
+    container_name: realtime-ops-api
+    env_file:
+      - .env
+    command: ['node', 'dist/apps/api-gateway/src/main.js']
+    ports:
+      - '3001:3001'
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  processing-service:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile
+    container_name: realtime-ops-processing
+    env_file:
+      - .env
+    command: ['node', 'dist/apps/processing-service/src/main.js']
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  realtime-gateway:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile
+    container_name: realtime-ops-realtime
+    env_file:
+      - .env
+    command: ['node', 'dist/apps/realtime-gateway/src/main.js']
+    ports:
+      - '3002:3002'
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: realtime-ops-nginx
+    ports:
+      - '8083:80'
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api-gateway
+      - realtime-gateway
+
+volumes:
+  postgres_data:
