@@ -84,7 +84,7 @@ stateDiagram-v2
     queued --> processing: worker consumes jobs.processing
     processing --> completed: attempt succeeds
     processing --> failed: attempt fails
-    failed --> queued: POST /api/v1/jobs/:id/retry\nwhen attemptCount < maxAttempts
+    failed --> queued: manual retry if attemptCount < maxAttempts
     completed --> [*]
     failed --> [*]
 ```
