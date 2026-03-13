@@ -1,176 +1,187 @@
 # Realtime Ops Platform
 
-Realtime Ops Platform is a NestJS microservices backend for operational workflows where jobs are processed asynchronously, failures raise actionable alerts, incidents are managed by operators, and live updates are streamed to WebSocket clients.
+Operational workflow backend for queued jobs, incident response, and live operator visibility.
 
-## Business Context
+Realtime Ops Platform is a NestJS microservices portfolio repository that shows how to combine PostgreSQL, RabbitMQ, Redis, and WebSockets into a cohesive operational control plane. The repository is intentionally backend-first: command handling, asynchronous execution, auditability, and realtime fanout are treated as first-class system concerns rather than add-ons around CRUD endpoints.
 
-Operations teams often need one place to track asynchronous work, react to failures quickly, and coordinate incident handling with a complete audit trail. This project models that workflow end to end using production-style backend patterns.
+## Quick Navigation
 
-## Feature Highlights
+- [Why This Repository Matters](#why-this-repository-matters)
+- [Architecture Overview](#architecture-overview)
+- [Workflow and Lifecycle Model](#workflow-and-lifecycle-model)
+- [Capability Matrix](#capability-matrix)
+- [API Overview](#api-overview)
+- [Realtime and WebSocket Overview](#realtime-and-websocket-overview)
+- [Local Workflow](#local-workflow)
+- [Validation and Quality](#validation-and-quality)
+- [Repository Structure](#repository-structure)
+- [Docs Map](#docs-map)
+- [Scope Boundaries](#scope-boundaries)
+- [Future Improvements](#future-improvements)
 
-- Queue-backed job execution with status transitions (`queued`, `processing`, `completed`, `failed`)
-- Retry workflow for failed jobs with guardrails on max attempts
-- Alert and incident lifecycle management with valid operator transitions
-- Notification feed for meaningful operational events
-- Full audit trail for system actions and operator commands
-- Real-time event fanout over WebSockets for jobs, alerts, incidents, and notifications
-- Redis-backed request rate limiting and processing locks
-- Structured API responses, validation, pagination, filtering, and sorting
-- Docker-first local environment with PostgreSQL, RabbitMQ, Redis, and Nginx
+## Why This Repository Matters
 
-## Technology Stack
+This repository is designed to read like a serious backend/platform project rather than a starter API:
 
-- Node.js 22
-- TypeScript (strict mode)
-- NestJS
-- PostgreSQL + TypeORM migrations
-- RabbitMQ (`amqplib`)
-- Redis (`ioredis`)
-- WebSockets (`@nestjs/websockets` + Socket.IO)
-- Jest + Supertest
-- ESLint + Prettier
-- Docker + Docker Compose
-- GitHub Actions CI
+- It separates request handling, background execution, and realtime fanout into independent NestJS runtimes.
+- It treats PostgreSQL as the system of record while RabbitMQ carries work and lifecycle events between services.
+- It models operational workflows end to end: jobs, processing attempts, alert escalation, incident handling, notifications, and audit history.
+- It includes the practical controls that make backend systems believable in review: validation, typed contracts, Redis-backed rate limiting, processing locks, tests, CI, Dockerized local execution, and explicit scope boundaries.
 
-## Architecture Summary
+The result is more than a jobs backend. It is a small operational platform with a clear control path from API command to worker execution to operator-facing visibility.
 
-The platform is split into three service processes:
+## Architecture Overview
 
-- `api-gateway`: authenticated REST API (`/api/v1/...`), DTO validation, operator commands/queries
-- `processing-service`: RabbitMQ consumer for job execution, retries, alerts/incidents side effects
-- `realtime-gateway`: WebSocket server plus RabbitMQ event consumer for fanout
+### Runtime Responsibilities
 
-Shared libraries hold domain entities, business services, and infrastructure adapters:
+| Component            | Role in the system             | Primary responsibilities                                                                                                                         |
+| -------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `api-gateway`        | Authenticated REST entry point | Validates requests, persists command-side records, exposes read models, enqueues jobs, emits initial lifecycle events                            |
+| `processing-service` | Queue worker                   | Consumes `jobs.processing`, acquires Redis locks, records attempts, completes or fails jobs, raises alerts, opens incidents on critical failures |
+| `realtime-gateway`   | Realtime delivery edge         | Consumes RabbitMQ lifecycle events, validates Socket.IO connections, fans events out to operator and channel rooms                               |
+| PostgreSQL           | System of record               | Stores jobs, attempts, alerts, incidents, notifications, audit entries, and operator actions                                                     |
+| RabbitMQ             | Work and event transport       | Durable `jobs.processing` queue plus durable `ops.events` topic exchange                                                                         |
+| Redis                | Coordination layer             | Fixed-window request rate limiting and per-job processing locks                                                                                  |
+| Nginx                | Optional local proxy           | Forwards `/api/`, `/realtime/`, and `/socket.io/` in Docker mode                                                                                 |
 
-- `libs/core`: entities, enums, shared domain types
-- `libs/application`: use-case style business services
-- `libs/database`: TypeORM config + migrations
-- `libs/messaging`: RabbitMQ service and topic constants
-- `libs/redis`: Redis client and lock service
-- `libs/auth`, `libs/common`: auth guards, rate limiting, response/error shaping
+```mermaid
+flowchart LR
+    C["Operator client"] -->|REST| API["API gateway"]
+    C -->|Socket.IO| RT["Realtime gateway"]
+    API -->|read/write| PG[("PostgreSQL")]
+    API -->|enqueue work| Q["RabbitMQ queue<br/>jobs.processing"]
+    API -->|publish lifecycle events| EX["RabbitMQ exchange<br/>ops.events"]
+    API -->|rate-limit counters| R[("Redis")]
+    Q --> W["Processing service"]
+    W -->|read/write| PG
+    W -->|per-job lock| R
+    W -->|publish lifecycle events| EX
+    EX -->|bind REALTIME_EVENTS_QUEUE| RT
+    RT -->|fanout to operators and channel rooms| C
+```
 
-See [docs/architecture.md](docs/architecture.md) for detailed internals.
+### Service Boundaries
 
-## Service Responsibilities
+- The API gateway stays thin and request-focused. It owns validation, authentication, pagination, filtering, and command submission.
+- The processing service owns background execution and state transitions. It is where job attempts, final outcomes, alert creation, and critical incident creation happen.
+- The realtime gateway is a meaningful runtime, not a thin transport shim. It consumes the same RabbitMQ event stream that the rest of the platform produces and turns it into operator-facing WebSocket traffic.
 
-### API Gateway
+Detailed architecture notes: [docs/architecture.md](docs/architecture.md)
 
-- Job create/list/detail/retry/status endpoints
-- Alert create/list/detail endpoints
-- Incident acknowledge/resolve endpoints
-- Notification and audit entry query endpoints
-- Processing summary and health endpoints
-- Swagger docs (`/api/docs`)
+## Workflow and Lifecycle Model
 
-### Processing Service
+### Job Lifecycle
 
-- Consumes `jobs.processing` queue messages
-- Executes job attempts with deterministic failure rules
-- Writes attempts, job final state, and side effects
-- Raises alerts and incidents on critical failures
-- Publishes lifecycle events to RabbitMQ topic exchange
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST /api/v1/jobs
+    queued --> processing: worker consumes jobs.processing
+    processing --> completed: attempt succeeds
+    processing --> failed: attempt fails
+    failed --> queued: POST /api/v1/jobs/:id/retry\nwhen attemptCount < maxAttempts
+    completed --> [*]
+    failed --> [*]
+```
 
-### Realtime Gateway
+The job model is intentionally operational rather than generic:
 
-- Authenticated Socket.IO namespace (`/realtime`)
-- Client subscriptions (`jobs`, `alerts`, `incidents`, `notifications`)
-- Event broadcast for `job.*`, `alert.*`, `incident.updated`, `notification.created`
+- Job creation persists the record in PostgreSQL with status `queued`, records operator activity, creates an initial notification, and publishes both queue work and lifecycle events.
+- The worker increments `attemptCount` when it starts processing, records a `processing_attempts` row, and acquires a Redis lock keyed by job ID to prevent concurrent execution of the same job.
+- A successful attempt marks the job `completed`, clears error state, writes audit metadata, and creates a job-status notification.
+- A failed attempt marks the job `failed`, records the error on both the job and the processing attempt, raises an alert, and may open an incident if the failure has reached the job's `maxAttempts` threshold.
+- Retries are manual, explicit operator actions. There is no automatic requeue, backoff, or dead-letter flow in the current implementation.
 
-## Auth Model and Current Limitations
+### Alert, Incident, Notification, and Audit Flow
 
-- API auth uses two headers: `x-operator-token` and `x-operator-id`.
-- WebSocket auth validates the same token during handshake.
-- This is intentionally lightweight for a portfolio project and keeps operational flows easy to run locally.
+```mermaid
+flowchart LR
+    F["Job failure"] --> A["Alert opened"]
+    A -->|severity = high| N["Notification created"]
+    A -->|severity = critical| I["Incident opened"]
+    I --> N
+    O["Operator action"] --> AU["Audit entry"]
+    F --> AU
+    A --> AU
+    I --> AU
+```
 
-Current limitations:
+At a high level:
 
-- no per-operator roles/permissions
-- single shared token model
-- no token rotation endpoint (token is environment-configured)
+- Alerts can originate from the processing service or from operator-created API commands.
+- Critical failures and escalated manual alerts can open incidents immediately.
+- Incident transitions (`acknowledge`, `resolve`) are operator-driven and update the linked alert status when an alert exists.
+- Notifications are currently created for queued jobs, completed jobs, retry queueing, and worker-raised failure alerts.
+- Audit entries capture both system-driven and operator-driven changes across jobs, alerts, and incidents.
+- Operator actions are also stored separately for explicit command history.
 
-## Job Processing Flow
+The domain model and lifecycle rules are documented in [docs/domain-model.md](docs/domain-model.md).
 
-1. Operator creates a job (`POST /api/v1/jobs`).
-2. API persists the job and publishes a message to `jobs.processing`.
-3. Processing service consumes the message, acquires a Redis lock, and starts an attempt.
-4. Attempt outcome updates job status and writes audit + notification records.
-5. On failures, an alert is raised; on critical conditions, an incident is created.
-6. Realtime events are published to RabbitMQ and broadcast to WebSocket clients.
+## Capability Matrix
 
-## Alert and Incident Flow
+| Area                     | Current implementation                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Auth / operator access   | Shared operator token plus operator ID headers on REST; token validation during WebSocket handshake                                              |
+| Jobs                     | Create, list, filter, sort, detail, and status endpoints with persisted queue-backed execution                                                   |
+| Retries                  | Manual retry for failed jobs only, gated by `attemptCount < maxAttempts`                                                                         |
+| Alerts                   | Worker-raised alerts for failures plus operator-created alerts through REST                                                                      |
+| Incidents                | Opened from critical failure paths or alert creation with critical severity or `createIncident=true`, then acknowledged or resolved by operators |
+| Notifications            | Persisted operator feed entries for queueing, completion, retry queueing, and failure-alert events                                               |
+| Audit entries            | Immutable audit log for system actions and operator actions, queryable over REST                                                                 |
+| WebSocket gateway        | Authenticated Socket.IO namespace with channel subscriptions and RabbitMQ-backed fanout                                                          |
+| RabbitMQ usage           | Durable command queue (`jobs.processing`) plus durable lifecycle exchange (`ops.events`)                                                         |
+| Redis usage              | Fixed-window API rate limiting and 60-second per-job processing locks                                                                            |
+| Tests / CI / type safety | Strict TypeScript, linting, formatting, unit tests, e2e tests, build validation, GitHub Actions CI                                               |
 
-- Alerts can be raised by processing side effects or manually by operators.
-- Critical alerts can create incidents immediately.
-- Incidents support operational transitions:
-  - `open -> acknowledged`
-  - `open|acknowledged -> resolved`
-- Every transition is auditable.
+## API Overview
 
-## WebSocket Realtime Model
+The README keeps the API surface summarized and leaves endpoint detail to the dedicated reference doc.
 
-- URL: `ws://localhost:3002/realtime`
-- Auth: `token` must match `OPERATOR_API_TOKEN`
-- Optional subscription channels: `jobs`, `alerts`, `incidents`, `notifications`
-- Event topics:
-  - `job.created`
-  - `job.processing`
-  - `job.completed`
-  - `job.failed`
-  - `alert.raised`
-  - `alert.acknowledged`
-  - `incident.updated`
-  - `notification.created`
+| Family             | Representative endpoints                                                                              | Purpose                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Health             | `GET /api/v1/health`                                                                                  | Public dependency health for PostgreSQL, RabbitMQ, and Redis               |
+| Jobs               | `POST /api/v1/jobs`, `GET /api/v1/jobs`, `GET /api/v1/jobs/:id/status`, `POST /api/v1/jobs/:id/retry` | Submit work, inspect status, and trigger manual retries                    |
+| Alerts             | `POST /api/v1/alerts`, `GET /api/v1/alerts`, `GET /api/v1/alerts/:id`                                 | Create and inspect operational alerts                                      |
+| Incidents          | `POST /api/v1/incidents/:id/acknowledge`, `POST /api/v1/incidents/:id/resolve`                        | Advance incident response workflow                                         |
+| Notifications      | `GET /api/v1/notifications`                                                                           | Query operator feed records                                                |
+| Audit              | `GET /api/v1/audit-entries`                                                                           | Query immutable operational history                                        |
+| Processing summary | `GET /api/v1/processing/status`                                                                       | Aggregate counts for jobs, alerts, incidents, and average attempt duration |
 
-Detailed contract examples are in [docs/websocket-flow.md](docs/websocket-flow.md).
+API reference: [docs/api-overview.md](docs/api-overview.md)
 
-## Quick Start (Docker)
+## Realtime and WebSocket Overview
+
+The realtime runtime is built around Socket.IO on the `/realtime` namespace and RabbitMQ event consumption:
+
+- Authentication accepts the same operator token used by REST, supplied through Socket.IO auth payload, query params, or headers.
+- Every successful connection joins the `operators` room automatically and receives a `connection.ready` event.
+- Clients can additionally subscribe to `jobs`, `alerts`, `incidents`, and `notifications`.
+- RabbitMQ lifecycle topics are consumed from `REALTIME_EVENTS_QUEUE` and re-broadcast as Socket.IO events with a consistent `{ topic, payload, emittedAt }` envelope.
+- The current implementation emits to the `operators` room and then to the matching channel room. Clients subscribed to both should deduplicate events client-side.
+
+| Event family           | Meaning in the current implementation                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `job.created`          | Job created or manually re-queued for retry (`retried: true` is included on retry fanout) |
+| `job.processing`       | Worker started an attempt                                                                 |
+| `job.completed`        | Attempt succeeded and job reached a terminal success state                                |
+| `job.failed`           | Attempt failed and job reached a terminal failed state for that attempt                   |
+| `alert.raised`         | Alert persisted for a failed job or operator-created alert                                |
+| `incident.updated`     | Incident opened, acknowledged, or resolved                                                |
+| `notification.created` | Notification record persisted                                                             |
+
+Realtime reference: [docs/websocket-flow.md](docs/websocket-flow.md)
+
+## Local Workflow
+
+### Quick Start
 
 ```bash
 cp .env.example .env
-docker compose up --build -d
-```
-
-Endpoints:
-
-- API: `http://localhost:3001/api/v1`
-- Swagger: `http://localhost:3001/api/docs`
-- Realtime Gateway: `http://localhost:3002`
-- Nginx proxy: `http://localhost:8083`
-- RabbitMQ UI: `http://localhost:15673`
-
-Default operator headers for API calls:
-
-- `x-operator-token: ops-local-token`
-- `x-operator-id: <your-operator-id>`
-
-## Environment Setup
-
-Required variables are defined in [.env.example](.env.example):
-
-- `DATABASE_URL`
-- `RABBITMQ_URL`
-- `REDIS_URL`
-- `OPERATOR_API_TOKEN`
-- `RATE_LIMIT_MAX_REQUESTS`
-- `RATE_LIMIT_WINDOW_SECONDS`
-- `REALTIME_EVENTS_QUEUE`
-
-## Local Development Workflow
-
-1. Start dependencies:
-
-```bash
-docker compose up -d postgres rabbitmq redis
-```
-
-2. Apply schema and seed:
-
-```bash
 npm install
+docker compose up -d postgres rabbitmq redis
 npm run db:setup
 ```
 
-3. Run services in separate terminals:
+Run the three services in separate terminals:
 
 ```bash
 npm run start:dev:api
@@ -178,115 +189,94 @@ npm run start:dev:processing
 npm run start:dev:realtime
 ```
 
-See [docs/local-development.md](docs/local-development.md) for Linux-oriented workflow details.
-
-## Testing and Quality Checks
+### Full Docker Stack
 
 ```bash
-npm run lint
-npm run format:check
-npm run typecheck
-npm run build
-npm run test:ci
+docker compose up --build -d
 ```
 
-Test suite includes:
+### Useful Local Endpoints
 
-- job creation, retry, validation, and status coverage
-- alert/incident transition flow
-- auth protection checks
-- audit and notification query checks
-- realtime routing verification
+| Endpoint               | URL                                   |
+| ---------------------- | ------------------------------------- |
+| REST API               | `http://localhost:3001/api/v1`        |
+| Swagger UI             | `http://localhost:3001/api/docs`      |
+| Realtime health        | `http://localhost:3002/api/v1/health` |
+| Realtime namespace     | `ws://localhost:3002/realtime`        |
+| Nginx proxy            | `http://localhost:8083`               |
+| RabbitMQ management UI | `http://localhost:15673`              |
 
-## API Overview
+### Database and Seed Notes
 
-Core endpoints:
+- `npm run db:setup` runs migrations and seeds example records only when the `jobs` table is empty.
+- The Docker `db-setup` service performs the same migration-and-seed step before application containers start.
+- Seed data gives reviewers a baseline set of jobs, alerts, incidents, notifications, and audit entries to inspect immediately.
 
-- `GET /api/v1/health`
-- `POST /api/v1/jobs`
-- `GET /api/v1/jobs`
-- `GET /api/v1/jobs/:id`
-- `GET /api/v1/jobs/:id/status`
-- `POST /api/v1/jobs/:id/retry`
-- `POST /api/v1/alerts`
-- `GET /api/v1/alerts`
-- `GET /api/v1/alerts/:id`
-- `POST /api/v1/incidents/:id/acknowledge`
-- `POST /api/v1/incidents/:id/resolve`
-- `GET /api/v1/notifications`
-- `GET /api/v1/audit-entries`
-- `GET /api/v1/processing/status`
+Local setup reference: [docs/local-development.md](docs/local-development.md)
 
-See [docs/api-overview.md](docs/api-overview.md) for request/response conventions.
+## Validation and Quality
 
-## Demo Walkthrough
+| Check             | Command                        |
+| ----------------- | ------------------------------ |
+| Lint              | `npm run lint`                 |
+| Format check      | `npm run format:check`         |
+| Type check        | `npm run typecheck`            |
+| Build             | `npm run build`                |
+| Test suite        | `npm run test:ci`              |
+| Full Docker stack | `docker compose up --build -d` |
+| Docker logs       | `docker compose logs -f`       |
 
-1. Create a job with `failTimes: 0` and watch it complete.
-2. Create a job with high `failTimes` and observe `job.failed` + `alert.raised` events.
-3. Retry the failed job.
-4. Raise a critical alert manually and resolve the linked incident.
-5. Query audit history and notifications.
-
-### Local Demo Commands
-
-```bash
-curl -X POST http://localhost:3001/api/v1/jobs \
-  -H \"content-type: application/json\" \
-  -H \"x-operator-token: ops-local-token\" \
-  -H \"x-operator-id: demo-operator\" \
-  -d '{\"name\":\"demo job\",\"type\":\"demo\",\"payload\":{\"failTimes\":0}}'
-```
-
-```bash
-curl \"http://localhost:3001/api/v1/jobs?page=1&limit=10\" \
-  -H \"x-operator-token: ops-local-token\" \
-  -H \"x-operator-id: demo-operator\"
-```
-
-```bash
-curl -X POST http://localhost:3001/api/v1/alerts \
-  -H \"content-type: application/json\" \
-  -H \"x-operator-token: ops-local-token\" \
-  -H \"x-operator-id: demo-operator\" \
-  -d '{\"severity\":\"critical\",\"title\":\"demo alert\",\"description\":\"manual incident test\",\"createIncident\":true}'
-```
-
-Use a Socket.IO client connected to `ws://localhost:3002/realtime` (token: `ops-local-token`) and subscribe to `jobs` and `alerts` to watch events during the same flow.
+The CI workflow on GitHub runs lint, format, type check, build, and test steps against PostgreSQL, RabbitMQ, and Redis service containers.
 
 ## Repository Structure
 
 ```text
 apps/
-  api-gateway/
-  processing-service/
-  realtime-gateway/
+  api-gateway/        REST entry point and command/query surface
+  processing-service/ RabbitMQ worker for job execution
+  realtime-gateway/   Socket.IO gateway and RabbitMQ event consumer
+docs/                 Architecture, API, runtime, and roadmap documentation
 libs/
-  application/
-  auth/
-  common/
-  core/
-  database/
-  messaging/
-  redis/
-docs/
-scripts/
-tests/
+  application/        Business services and use-case orchestration
+  auth/               Operator auth and Redis-backed rate limiting
+  common/             Response envelopes, exception filters, pagination DTOs
+  core/               Entities, enums, and shared domain contracts
+  database/           TypeORM wiring and migrations
+  messaging/          RabbitMQ transport and routing constants
+  redis/              Redis client and lock service
+scripts/              Database setup, migration, and seeding entry points
+tests/                Unit and e2e coverage
 ```
 
-## Security Notes
+## Docs Map
 
-- Header token auth for management endpoints
-- WebSocket token validation during handshake
-- Redis-backed rate limiting on API routes
-- Request DTO validation with strict whitelisting
-- Internal state changes captured via audit entries
+| Document                                               | Focus                                                                                           |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| [docs/architecture.md](docs/architecture.md)           | Runtime boundaries, infrastructure responsibilities, and end-to-end data flow                   |
+| [docs/domain-model.md](docs/domain-model.md)           | Entity roles, relationships, lifecycle rules, and retry semantics                               |
+| [docs/api-overview.md](docs/api-overview.md)           | Auth model, endpoint families, filters, envelopes, and operational API notes                    |
+| [docs/websocket-flow.md](docs/websocket-flow.md)       | Socket.IO connection model, subscriptions, event families, and delivery behavior                |
+| [docs/security.md](docs/security.md)                   | Current access controls, validation, rate limiting, auditability, and production hardening gaps |
+| [docs/local-development.md](docs/local-development.md) | Local setup, Docker workflow, ports, and smoke-test path                                        |
+| [docs/deployment-notes.md](docs/deployment-notes.md)   | Container topology, startup order, configuration, and current scaling limits                    |
+| [docs/roadmap.md](docs/roadmap.md)                     | Realistic next steps beyond the current implementation                                          |
 
-Details: [docs/security.md](docs/security.md)
+## Scope Boundaries
 
-## Deployment Notes
+The repository is intentionally strong on backend mechanics while remaining honest about what is not implemented yet.
 
-Containerized deployment details and operational notes are documented in [docs/deployment-notes.md](docs/deployment-notes.md).
+| Implemented now                                           | Not implemented yet                                                          |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Authenticated operator API and WebSocket access           | Full RBAC or scoped per-operator permissions                                 |
+| Manual retry workflow with attempt guardrails             | Automatic retry backoff, delayed requeue, or dead-letter queues              |
+| Alert creation and incident acknowledge/resolve endpoints | Incident list/detail endpoints                                               |
+| RabbitMQ-backed lifecycle events and realtime fanout      | Distributed Socket.IO adapter for multi-instance realtime fanout             |
+| Redis rate limiting and processing locks                  | Cross-service idempotency keys or replay protection                          |
+| Docker Compose local topology and CI validation           | Production deployment manifests or cloud-specific infrastructure definitions |
 
-## Roadmap
+## Future Improvements
 
-Planned improvements are tracked in [docs/roadmap.md](docs/roadmap.md).
+- Add role-aware authorization and incident query endpoints so operator workflows are complete on the read side as well as the command side.
+- Introduce automatic retry policy controls such as backoff, scheduled requeue, and dead-letter handling.
+- Add richer notification workflows for read state, preferences, and incident-driven operator messaging.
+- Extend observability with tracing, queue depth metrics, and incident-response dashboards.

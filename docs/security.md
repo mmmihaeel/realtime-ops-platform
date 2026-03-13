@@ -1,49 +1,86 @@
 # Security
 
-## API Access Control
+The repository uses a deliberately lightweight but explicit security model that matches its portfolio scope: authenticated operator access, strict request validation, Redis-backed rate limiting, and persistent audit history.
 
-- Management routes require `x-operator-token` and `x-operator-id`.
-- Token validation is enforced by a global guard.
-- Invalid tokens and missing operator IDs are rejected with `401`.
+Related docs: [README](../README.md), [API Overview](api-overview.md), [Deployment Notes](deployment-notes.md)
 
-## WebSocket Access Control
+## Current Access Model
 
-- Handshake token is validated before socket admission.
-- Unauthorized clients are disconnected.
-- Channel subscriptions are restricted to known room names.
+| Surface             | Current control                                                                                    |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| REST API            | `OperatorAuthGuard` validates `x-operator-token` and requires `x-operator-id` on non-public routes |
+| WebSocket namespace | Handshake token is validated before the socket is accepted                                         |
+| Public endpoints    | `GET /api/v1/health` on the API gateway and realtime gateway health are intentionally public       |
+| Security headers    | `helmet()` is enabled on API and realtime Nest applications                                        |
 
-## Input Validation
+This is operator-authenticated access, not full identity or role management.
 
-- DTO validation with `class-validator` and strict Nest `ValidationPipe`:
-  - `whitelist: true`
-  - `forbidNonWhitelisted: true`
-  - `transform: true`
+## Validation and Input Safety
+
+The HTTP layer uses Nest validation pipes with:
+
+- `transform: true`
+- `whitelist: true`
+- `forbidNonWhitelisted: true`
+
+Practical effect:
+
+- unknown DTO properties are rejected
+- numeric and boolean query/body fields are coerced where configured
+- invalid route and payload shapes fail early with structured error responses
 
 ## Rate Limiting
 
-- Redis-backed fixed-window guard on authenticated API routes.
-- Configurable via environment variables.
-- Public routes bypass the rate-limit guard.
+Authenticated API routes are protected by `RedisRateLimitGuard`.
+
+| Characteristic | Current behavior                                       |
+| -------------- | ------------------------------------------------------ |
+| Strategy       | Fixed-window counter                                   |
+| Backing store  | Redis                                                  |
+| Key shape      | `rate-limit:{ip}:{method}:{path}`                      |
+| Configuration  | `RATE_LIMIT_MAX_REQUESTS`, `RATE_LIMIT_WINDOW_SECONDS` |
+| Public routes  | Bypass the guard                                       |
+
+This is intentionally simple and local-deployment friendly. It protects the demo surface without introducing additional infrastructure complexity.
+
+## Worker Safety and Coordination
+
+The processing service uses Redis as a coordination layer rather than a source of truth.
+
+| Control                         | Why it exists                                                            |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| Per-job Redis lock              | Prevents concurrent worker execution of the same job                     |
+| PostgreSQL as record of truth   | Ensures final workflow state remains durable and queryable               |
+| RabbitMQ durable queue/exchange | Preserves queued work and lifecycle events across normal broker restarts |
 
 ## Auditability
 
-- System and operator actions are persisted in `audit_entries`.
-- Operator commands are also written to `operator_actions`.
+The repository leans heavily on persistent operational history.
 
-## Data Safety Considerations
+| Record             | Purpose                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| `audit_entries`    | Immutable log of system and operator actions               |
+| `operator_actions` | Explicit record of operator-issued commands                |
+| `notifications`    | Reviewer-visible operator feed entries for selected events |
 
-- SQL schema includes foreign keys and indexes for operational queries.
-- Sensitive internal fields are not exposed by dedicated internal endpoints.
+This matters for security and operations alike: even with a lightweight auth model, sensitive state transitions are not silent.
+
+## Current Limitations
+
+These are real scope boundaries, not hidden omissions:
+
+| Not implemented yet                             | Impact                                                                 |
+| ----------------------------------------------- | ---------------------------------------------------------------------- |
+| Per-operator RBAC or scoped permissions         | All authenticated operators share the same effective access level      |
+| Token rotation or identity-provider integration | Token management is environment-configured and static                  |
+| TLS termination inside the repo                 | Expected to be handled by deployment infrastructure                    |
+| Distributed WebSocket authorization state       | Current realtime model is single-token and single-instance in behavior |
+| Idempotency keys for command endpoints          | Duplicate submissions are not prevented at the API contract level      |
 
 ## Recommended Production Hardening
 
-- rotate and externalize operator tokens via secrets manager
-- add per-operator RBAC and scoped permissions
-- enable TLS termination and mTLS where required
-- add structured security audit log forwarding
-
-## Current Public Limitations
-
-- authentication is token-based and not identity-provider integrated
-- no per-route authorization policy beyond authenticated operator access
-- websocket authentication uses the same shared token model as REST
+- Replace the shared operator token with a real identity provider or signed token model.
+- Add RBAC so incident, alert, and administrative actions can be scoped by role.
+- Terminate TLS in front of the services and externalize secrets into a proper secrets manager.
+- Forward audit data and application logs into centralized monitoring and alerting systems.
+- Add idempotency keys for write endpoints that may be retried by clients or intermediaries.

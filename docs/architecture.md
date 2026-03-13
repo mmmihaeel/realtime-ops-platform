@@ -1,81 +1,118 @@
 # Architecture
 
-## Overview
+Realtime Ops Platform separates command handling, background execution, and realtime delivery into three NestJS runtimes backed by PostgreSQL, RabbitMQ, and Redis.
 
-Realtime Ops Platform is an event-driven NestJS backend split into three runtime services and a shared library layer.
+Related docs: [README](../README.md), [Domain Model](domain-model.md), [WebSocket Flow](websocket-flow.md), [Local Development](local-development.md)
 
 ## Runtime Services
 
-- `api-gateway` (HTTP): operator command/query API under `/api/v1`
-- `processing-service` (worker): asynchronous job execution from RabbitMQ queues
-- `realtime-gateway` (HTTP + WebSocket): live event delivery to subscribed clients
+| Service              | Entry point                     | Owns                                                                                                | Depends on                             |
+| -------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `api-gateway`        | HTTP on `:3001`                 | REST commands and queries, auth, validation, pagination, queue submission, initial lifecycle events | PostgreSQL, RabbitMQ, Redis            |
+| `processing-service` | Nest application context worker | Job execution, attempt recording, final job states, alert creation, critical incident creation      | PostgreSQL, RabbitMQ, Redis            |
+| `realtime-gateway`   | HTTP + Socket.IO on `:3002`     | WebSocket authentication, room subscriptions, RabbitMQ event consumption, event fanout              | RabbitMQ, Redis, operator token config |
 
-## Infrastructure Components
+## Shared Libraries
 
-- PostgreSQL: system-of-record persistence and audit history
-- RabbitMQ:
-  - queue: `jobs.processing`
-  - topic exchange: `ops.events`
-- Redis:
-  - processing locks (`job-processing-lock:{jobId}`)
-  - request rate limiting counters
-- Nginx (optional local proxy): API and WebSocket forwarding
+| Library            | Responsibility                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `libs/core`        | Entities, enums, and shared domain contracts                                                         |
+| `libs/application` | Business services such as `JobService`, `JobProcessorService`, `IncidentService`, and `AuditService` |
+| `libs/database`    | TypeORM configuration and migrations                                                                 |
+| `libs/messaging`   | RabbitMQ lifecycle, durable queue/exchange setup, publish/consume helpers                            |
+| `libs/redis`       | Redis client lifecycle and per-job lock helper                                                       |
+| `libs/auth`        | Operator token validation, request guard, and Redis-backed rate limiting                             |
+| `libs/common`      | Response envelope, global exception filter, pagination DTOs                                          |
 
-## Module Boundaries
+## Component View
 
-- `libs/core`: entities/enums/domain contracts
-- `libs/application`: use-case services (`JobService`, `JobProcessorService`, etc.)
-- `libs/database`: TypeORM setup + migration classes
-- `libs/messaging`: RabbitMQ lifecycle + publish/consume methods
-- `libs/redis`: Redis lifecycle + lock helper
-- `libs/auth`: operator token guard + rate limiting guard
-- `libs/common`: response interceptor + exception filter + shared DTOs
+```mermaid
+flowchart LR
+    U["Operator or reviewer"] -->|HTTP| API["API gateway"]
+    U -->|Socket.IO| RT["Realtime gateway"]
+    API --> PG[("PostgreSQL")]
+    API -->|sendToQueue| Q["jobs.processing"]
+    API -->|publishEvent| X["ops.events"]
+    API -->|fixed-window counters| R[("Redis")]
+    Q --> W["Processing service"]
+    W --> PG
+    W -->|lock job-processing-lock:{jobId}| R
+    W -->|publishEvent| X
+    X -->|queue binding: #| RT
+    RT -->|topic fanout| U
+```
 
-## Eventing Design
+## Service Responsibilities
 
-### Command Side
+### API Gateway
 
-REST commands in `api-gateway` persist records and enqueue processing work (`jobs.processing`).
+The API gateway is the command and query edge of the system.
 
-### Processing Side
+- Applies `helmet`, global validation, structured error responses, and response envelopes.
+- Enforces `x-operator-token` and `x-operator-id` on non-public routes.
+- Persists jobs, alerts, operator actions, notifications, and audit entries through application services.
+- Publishes new work to RabbitMQ and emits lifecycle events for creation-side actions.
+- Exposes operational read models such as job status and processing summary.
 
-`processing-service` consumes queue messages, executes business logic, writes state changes, and emits topic events.
+### Processing Service
 
-### Realtime Side
+The processing service is intentionally isolated from request handling.
 
-`realtime-gateway` consumes `ops.events` and broadcasts events to websocket rooms and operator sessions.
+- Consumes the durable `jobs.processing` queue.
+- Acquires a Redis lock per job before starting execution.
+- Increments `attemptCount` when an attempt begins and writes a `processing_attempts` row.
+- Marks the job `completed` or `failed` and records attempt timing/error details.
+- Creates alerts for failures and creates incidents when the failure has crossed the job's `maxAttempts` threshold.
+- Emits lifecycle events to the `ops.events` exchange for realtime delivery.
 
-## Realtime Visibility Path
+### Realtime Gateway
 
-1. API and worker publish lifecycle topics to `ops.events`.
-2. Realtime gateway consumes the topics using `REALTIME_EVENTS_QUEUE`.
-3. Gateway maps topics to channel rooms:
-   - `job.*` -> `jobs`
-   - `alert.*` -> `alerts`
-   - `incident.*` -> `incidents`
-   - `notification.*` -> `notifications`
-4. Every event is also emitted to the `operators` room for broad operational visibility.
+The realtime runtime turns RabbitMQ events into Socket.IO broadcasts.
 
-## Data Access Pattern
+- Accepts connections on the `/realtime` namespace.
+- Validates the operator token during the handshake.
+- Joins every accepted socket to `operators` and allows optional room subscriptions for `jobs`, `alerts`, `incidents`, and `notifications`.
+- Consumes all event topics from the queue named by `REALTIME_EVENTS_QUEUE`.
+- Broadcasts events with a `{ topic, payload, emittedAt }` envelope.
 
-Business services interact with TypeORM repositories through explicit service methods. Controllers stay thin and map validated DTOs to use-case calls.
+## Data and Transport Responsibilities
 
-## Error and Response Pattern
+| Component                  | What it stores or transports                                                                 | Why it exists in the architecture                                                    |
+| -------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| PostgreSQL                 | Jobs, processing attempts, alerts, incidents, notifications, audit entries, operator actions | Durable system of record for workflow state and reviewer-visible operational history |
+| RabbitMQ `jobs.processing` | Command-side work submissions                                                                | Decouples request acceptance from background execution                               |
+| RabbitMQ `ops.events`      | Lifecycle topics such as `job.*`, `alert.raised`, `incident.updated`, `notification.created` | Standardizes downstream event delivery for realtime consumers                        |
+| Redis                      | Rate-limit counters and per-job locks                                                        | Adds lightweight coordination without turning Redis into a source of truth           |
 
-- Global exception filter returns structured error payloads.
-- Global response interceptor wraps successful results in `{ success, data, meta? }`.
+## End-to-End Flow
 
-## Operational Sequence
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as API gateway
+    participant DB as PostgreSQL
+    participant MQ as RabbitMQ
+    participant Worker as Processing service
+    participant RT as Realtime gateway
 
-1. `POST /jobs` writes job record + audit + notification.
-2. API publishes job processing message.
-3. Worker transitions job to `processing` and writes processing attempt.
-4. Worker sets final state and triggers side effects.
-5. Worker publishes lifecycle events.
-6. Realtime gateway fans out event payloads to clients.
+    Client->>API: POST /api/v1/jobs
+    API->>DB: insert job, audit entry, notification
+    API->>MQ: enqueue jobs.processing
+    API->>MQ: publish job.created + notification.created
+    MQ-->>RT: lifecycle events
+    RT-->>Client: Socket.IO events
+    MQ-->>Worker: consume jobs.processing
+    Worker->>DB: create processing attempt, update job
+    Worker->>MQ: publish job.processing
+    Worker->>DB: mark completed or failed
+    Worker->>MQ: publish terminal lifecycle events
+    MQ-->>RT: terminal events
+    RT-->>Client: job / alert / incident / notification events
+```
 
-## Why This Split
+## Architectural Constraints
 
-- API layer stays request-focused and thin.
-- Processing concerns stay queue-driven and resilient to API latency.
-- Realtime concerns remain isolated so websocket fanout changes do not impact command/query handlers.
+- PostgreSQL is the source of truth. Redis is coordination-only and RabbitMQ is transport-only.
+- Retry behavior is explicit and operator-driven. The current implementation does not do automatic backoff or dead-letter processing.
+- Realtime delivery is currently single-gateway in behavior. The repository does not include a distributed Socket.IO adapter for multi-instance fanout.
+- The access model is operator-authenticated but not yet role-based. This is a conscious scope boundary, not an omitted detail.
