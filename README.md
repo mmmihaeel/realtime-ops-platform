@@ -4,6 +4,8 @@ Operational workflow backend for queued jobs, incident response, and live operat
 
 Realtime Ops Platform is a NestJS microservices portfolio repository that shows how to combine PostgreSQL, RabbitMQ, Redis, and WebSockets into a cohesive operational control plane. The repository is intentionally backend-first: command handling, asynchronous execution, auditability, and realtime fanout are treated as first-class system concerns rather than add-ons around CRUD endpoints.
 
+![Realtime Ops Platform hero placeholder](assets/readme/hero.svg)
+
 ## Quick Navigation
 
 - [Why This Repository Matters](#why-this-repository-matters)
@@ -31,6 +33,8 @@ This repository is designed to read like a serious backend/platform project rath
 The result is more than a jobs backend. It is a small operational platform with a clear control path from API command to worker execution to operator-facing visibility.
 
 ## Architecture Overview
+
+![Realtime Ops Platform platform topology placeholder](assets/readme/platform-topology.svg)
 
 ### Runtime Responsibilities
 
@@ -69,6 +73,8 @@ flowchart LR
 Detailed architecture notes: [docs/architecture.md](docs/architecture.md)
 
 ## Workflow and Lifecycle Model
+
+![Realtime Ops Platform lifecycle overview placeholder](assets/readme/lifecycle-overview.svg)
 
 ### Job Lifecycle
 
@@ -149,6 +155,8 @@ The README keeps the API surface summarized and leaves endpoint detail to the de
 API reference: [docs/api-overview.md](docs/api-overview.md)
 
 ## Realtime and WebSocket Overview
+
+![Realtime Ops Platform async flow placeholder](assets/readme/async-flow.svg)
 
 The realtime runtime is built around Socket.IO on the `/realtime` namespace and RabbitMQ event consumption:
 

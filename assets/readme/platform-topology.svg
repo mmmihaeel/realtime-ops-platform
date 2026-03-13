@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">realtime-ops-platform / platform topology placeholder</title>
+  <desc id="desc">Minimal placeholder SVG for the README platform topology section.</desc>
+  <rect width="1600" height="900" fill="#111418" />
+  <rect x="48" y="48" width="1504" height="804" rx="24" fill="none" stroke="#2A2F36" stroke-width="2" />
+  <text x="800" y="470" fill="#E6E8EB" font-family="Segoe UI, Arial, sans-serif" font-size="36" text-anchor="middle">
+    realtime-ops-platform / platform topology placeholder
+  </text>
+</svg>
