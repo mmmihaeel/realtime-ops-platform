@@ -1,9 +1,61 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
-  <title id="title">realtime-ops-platform / async flow placeholder</title>
-  <desc id="desc">Minimal placeholder SVG for the README async flow section.</desc>
-  <rect width="1600" height="900" fill="#111418" />
-  <rect x="48" y="48" width="1504" height="804" rx="24" fill="none" stroke="#2A2F36" stroke-width="2" />
-  <text x="800" y="470" fill="#E6E8EB" font-family="Segoe UI, Arial, sans-serif" font-size="38" text-anchor="middle">
-    realtime-ops-platform / async flow placeholder
-  </text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 300" width="1280" height="300">
+  <defs>
+    <pattern id="af-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow-af" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#64748B" />
+    </marker>
+    <marker id="arrow-af-alert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#EF4444" />
+    </marker>
+  </defs>
+  <rect width="1280" height="300" fill="#0F172A" />
+  <rect width="1280" height="300" fill="url(#af-grid)" />
+  <text x="80" y="50" fill="#94A3B8" font-size="12" font-family="system-ui, -apple-system, sans-serif" font-weight="700" letter-spacing="1">ASYNC PROCESSING FLOW</text>
+  <!-- Connectors -->
+  <path d="M 240 140 L 290 140" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-af)" />
+  <path d="M 460 140 L 510 140" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-af)" />
+  <!-- Fanout from Worker -->
+  <path d="M 680 140 L 730 140 L 730 60 L 790 60" fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-af)" stroke-linejoin="round" />
+  <path d="M 680 140 L 790 140" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-af)" />
+  <path d="M 680 140 L 730 140 L 730 220 L 790 220" fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow-af)" stroke-linejoin="round" />
+  <!-- Alert Connection -->
+  <path d="M 960 220 L 1010 220" stroke="#EF4444" stroke-width="2" marker-end="url(#arrow-af-alert)" />
+  <!-- Nodes -->
+  <g transform="translate(80, 110)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#334155" stroke-width="1" rx="8" />
+    <rect width="6" height="60" fill="#94A3B8" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">Job Created</text>
+  </g>
+  <g transform="translate(300, 110)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#334155" stroke-width="1" rx="8" />
+    <rect width="6" height="60" fill="#F97316" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">RabbitMQ</text>
+  </g>
+  <g transform="translate(520, 110)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#334155" stroke-width="1" rx="8" />
+    <rect width="6" height="60" fill="#10B981" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">Worker</text>
+  </g>
+  <g transform="translate(800, 30)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#334155" stroke-width="1" rx="8" />
+    <rect width="6" height="60" fill="#38BDF8" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">WebSocket Fanout</text>
+  </g>
+  <g transform="translate(800, 110)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#334155" stroke-width="1" rx="8" />
+    <rect width="6" height="60" fill="#F59E0B" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">Notification / Audit</text>
+  </g>
+  <g transform="translate(800, 190)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#334155" stroke-width="1" stroke-dasharray="4,4" rx="8" />
+    <rect width="6" height="60" fill="#F59E0B" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">Retry</text>
+  </g>
+  <g transform="translate(1020, 190)">
+    <rect width="160" height="60" fill="#1E293B" stroke="#EF4444" stroke-width="1" rx="8" />
+    <rect width="6" height="60" fill="#EF4444" rx="3" />
+    <text x="80" y="35" fill="#F8FAFC" font-size="14" font-family="system-ui, -apple-system, sans-serif" font-weight="600" text-anchor="middle">Alert / Incident</text>
+  </g>
 </svg>
